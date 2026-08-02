@@ -10,12 +10,19 @@ import gspread
 from bs4 import BeautifulSoup
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 # ================= CONFIG =================
+
 URL_BASE = "https://www.itinerarinellarte.it"
 URL_EVENTI = f"{URL_BASE}/it/mostre/friuli-venezia-giulia"
 
+# Con 7 vengono considerati oggi e i successivi 7 giorni.
 GIORNI_AVANTI = 7
+
+# Numero massimo di pagine successive da controllare.
+# Con 4 vengono controllate la prima pagina più altre quattro.
 MAX_PAGES = 4
+
 RISULTATI_PER_PAGINA = 10
 SLEEP_TIME = 2
 
@@ -28,39 +35,72 @@ logging.basicConfig(
 )
 
 MESI = {
-    1: "Gen", 2: "Feb", 3: "Mar", 4: "Apr", 5: "Mag", 6: "Giu",
-    7: "Lug", 8: "Ago", 9: "Set", 10: "Ott", 11: "Nov", 12: "Dic"
+    1: "Gen",
+    2: "Feb",
+    3: "Mar",
+    4: "Apr",
+    5: "Mag",
+    6: "Giu",
+    7: "Lug",
+    8: "Ago",
+    9: "Set",
+    10: "Ott",
+    11: "Nov",
+    12: "Dic"
 }
 
-DATE_RE = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{4})\b")
-EVENT_PATH_RE = re.compile(r"^/it/mostre/.+-\d+/?$")
+DATE_RE = re.compile(
+    r"\b(\d{1,2}/\d{1,2}/\d{4})\b"
+)
+
+EVENT_PATH_RE = re.compile(
+    r"^/it/mostre/.+-\d+/?$"
+)
 
 
 # ================= UTILS =================
+
 def parse_data(text):
     try:
-        return datetime.strptime(text.strip(), "%d/%m/%Y").date()
+        return datetime.strptime(
+            text.strip(),
+            "%d/%m/%Y"
+        ).date()
+
     except (TypeError, ValueError):
         return None
 
 
 def normalizza_spazi(text):
-    return " ".join((text or "").split())
+    return " ".join(
+        (text or "").split()
+    )
 
 
 def is_event_link(href):
     if not href:
         return False
 
-    path = urlparse(urljoin(URL_BASE, href)).path
-    return bool(EVENT_PATH_RE.match(path))
+    url_completo = urljoin(
+        URL_BASE,
+        href
+    )
+
+    path = urlparse(
+        url_completo
+    ).path
+
+    return bool(
+        EVENT_PATH_RE.match(path)
+    )
 
 
 def trova_contenitore_evento(link_elem):
     """
-    Trova il più piccolo contenitore HTML che racchiude
-    il titolo, le date e il luogo dell'evento.
+    Cerca il contenitore HTML più vicino che racchiude
+    titolo, date e luogo dell'evento.
     """
+
     parent = link_elem
 
     for _ in range(8):
@@ -69,20 +109,33 @@ def trova_contenitore_evento(link_elem):
         if parent is None:
             return None
 
-        testo = normalizza_spazi(parent.get_text(" ", strip=True))
-        date_trovate = DATE_RE.findall(testo)
+        testo = normalizza_spazi(
+            parent.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        date_trovate = DATE_RE.findall(
+            testo
+        )
 
         if len(date_trovate) < 2:
             continue
 
         link_evento_nel_blocco = [
-            a
-            for a in parent.find_all("a", href=True)
-            if is_event_link(a.get("href"))
+            link
+            for link in parent.find_all(
+                "a",
+                href=True
+            )
+            if is_event_link(
+                link.get("href")
+            )
         ]
 
-        # La stessa scheda può contenere due link:
-        # uno sull'immagine e uno sul titolo.
+        # Una scheda può avere più link allo stesso evento,
+        # per esempio uno sull'immagine e uno sul titolo.
         if len(link_evento_nel_blocco) <= 3:
             return parent
 
@@ -95,7 +148,7 @@ def estrai_luogo(container):
         for stringa in container.stripped_strings
     ]
 
-    # Cerca una stringa del tipo:
+    # Cerca una stringa simile a:
     # "Friuli Venezia Giulia, Udine"
     for testo in reversed(stringhe):
         if "Friuli Venezia Giulia" not in testo:
@@ -104,7 +157,10 @@ def estrai_luogo(container):
         if "," not in testo:
             continue
 
-        luogo = testo.split(",", 1)[1]
+        luogo = testo.split(
+            ",",
+            1
+        )[1]
 
         luogo = re.sub(
             r"\bevento concluso\b",
@@ -113,14 +169,19 @@ def estrai_luogo(container):
             flags=re.IGNORECASE
         )
 
-        luogo = normalizza_spazi(luogo).strip(" -")
+        luogo = normalizza_spazi(
+            luogo
+        ).strip(" -")
 
         if luogo:
             return luogo
 
-    # Ricerca di riserva sull'intero testo della scheda.
+    # Ricerca alternativa nell'intero testo della scheda.
     testo_completo = normalizza_spazi(
-        container.get_text(" ", strip=True)
+        container.get_text(
+            " ",
+            strip=True
+        )
     )
 
     match = re.search(
@@ -131,7 +192,9 @@ def estrai_luogo(container):
     )
 
     if match:
-        luogo = normalizza_spazi(match.group(1)).strip(" -")
+        luogo = normalizza_spazi(
+            match.group(1)
+        ).strip(" -")
 
         if luogo:
             return luogo
@@ -139,19 +202,27 @@ def estrai_luogo(container):
     return "Luogo non disponibile"
 
 
-# ================= SCRAPING =================
+# ================= ESTRAZIONE EVENTI =================
+
 def estrai_eventi(soup):
     eventi = []
 
-    # Usa solo la data, senza ore e minuti.
-    # In questo modo una mostra che termina oggi non viene esclusa.
+    # Si confrontano solo le date, senza ore e minuti.
     oggi = datetime.now().date()
-    limite = oggi + timedelta(days=GIORNI_AVANTI)
+
+    limite = oggi + timedelta(
+        days=GIORNI_AVANTI
+    )
 
     link_candidati = [
-        a
-        for a in soup.find_all("a", href=True)
-        if is_event_link(a.get("href"))
+        link
+        for link in soup.find_all(
+            "a",
+            href=True
+        )
+        if is_event_link(
+            link.get("href")
+        )
     ]
 
     logging.info(
@@ -164,20 +235,32 @@ def estrai_eventi(soup):
 
     for link_elem in link_candidati:
         titolo = normalizza_spazi(
-            link_elem.get_text(" ", strip=True)
+            link_elem.get_text(
+                " ",
+                strip=True
+            )
         )
 
-        # Il link sull'immagine può non avere testo.
+        # Il link sull'immagine potrebbe non contenere testo.
         if not titolo:
             continue
 
-        href = urljoin(URL_BASE, link_elem.get("href"))
-        href = href.split("#", 1)[0]
+        href = urljoin(
+            URL_BASE,
+            link_elem.get("href")
+        )
+
+        href = href.split(
+            "#",
+            1
+        )[0]
 
         if href in link_gia_letti:
             continue
 
-        container = trova_contenitore_evento(link_elem)
+        container = trova_contenitore_evento(
+            link_elem
+        )
 
         if container is None:
             logging.warning(
@@ -187,18 +270,27 @@ def estrai_eventi(soup):
             continue
 
         testo_container = normalizza_spazi(
-            container.get_text(" ", strip=True)
+            container.get_text(
+                " ",
+                strip=True
+            )
         )
 
-        date_trovate = DATE_RE.findall(testo_container)
+        date_trovate = DATE_RE.findall(
+            testo_container
+        )
 
         if not date_trovate:
             continue
 
-        data_inizio = parse_data(date_trovate[0])
+        data_inizio = parse_data(
+            date_trovate[0]
+        )
 
         if len(date_trovate) >= 2:
-            data_fine = parse_data(date_trovate[1])
+            data_fine = parse_data(
+                date_trovate[1]
+            )
         else:
             data_fine = data_inizio
 
@@ -214,28 +306,43 @@ def estrai_eventi(soup):
             )
             continue
 
-        link_gia_letti.add(href)
+        link_gia_letti.add(
+            href
+        )
+
         schede_lette += 1
 
-        # L'evento deve intersecare il periodo:
-        # da oggi a oggi + GIORNI_AVANTI.
+        # Esclude gli eventi già terminati.
         if data_fine < oggi:
             continue
 
+        # Esclude gli eventi che iniziano oltre il periodo richiesto.
         if data_inizio > limite:
             continue
 
-        primo_giorno = max(data_inizio, oggi)
-        ultimo_giorno = min(data_fine, limite)
+        primo_giorno = max(
+            data_inizio,
+            oggi
+        )
 
-        luogo = estrai_luogo(container)
+        ultimo_giorno = min(
+            data_fine,
+            limite
+        )
+
+        luogo = estrai_luogo(
+            container
+        )
 
         numero_giorni = (
             ultimo_giorno - primo_giorno
         ).days
 
+        # Crea una riga per ogni giorno in cui la mostra è attiva.
         for i in range(numero_giorni + 1):
-            giorno = primo_giorno + timedelta(days=i)
+            giorno = primo_giorno + timedelta(
+                days=i
+            )
 
             eventi.append({
                 "titolo": titolo,
@@ -264,6 +371,8 @@ def estrai_eventi(soup):
     return eventi, schede_lette
 
 
+# ================= SCRAPING =================
+
 def crea_scraper():
     return cloudscraper.create_scraper(
         browser={
@@ -282,10 +391,14 @@ def scarica_eventi():
 
     headers = {
         "Accept": (
-            "text/html,application/xhtml+xml,"
-            "application/xml;q=0.9,*/*;q=0.8"
+            "text/html,"
+            "application/xhtml+xml,"
+            "application/xml;q=0.9,"
+            "*/*;q=0.8"
         ),
-        "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
+        "Accept-Language": (
+            "it-IT,it;q=0.9,en;q=0.8"
+        ),
         "Cache-Control": "no-cache"
     }
 
@@ -350,13 +463,15 @@ def scarica_eventi():
             titolo_pagina
         )
 
-        eventi, schede_lette = estrai_eventi(soup)
+        eventi, schede_lette = estrai_eventi(
+            soup
+        )
 
-        # Se non viene riconosciuta neppure una scheda,
-        # salva la pagina HTML ricevuta per controllarla.
+        # Se non viene riconosciuta nessuna scheda,
+        # salva l'HTML ricevuto per consentire il controllo.
         if schede_lette == 0:
             debug_file = (
-                f"debug_itinerarinellarte_"
+                "debug_itinerarinellarte_"
                 f"pagina_{page + 1}.html"
             )
 
@@ -365,7 +480,9 @@ def scarica_eventi():
                 "w",
                 encoding="utf-8"
             ) as file:
-                file.write(response.text)
+                file.write(
+                    response.text
+                )
 
             logging.error(
                 "Nessuna scheda riconosciuta. "
@@ -384,21 +501,29 @@ def scarica_eventi():
             if chiave in chiavi_eventi:
                 continue
 
-            chiavi_eventi.add(chiave)
-            eventi_totali.append(evento)
+            chiavi_eventi.add(
+                chiave
+            )
 
-        time.sleep(SLEEP_TIME)
+            eventi_totali.append(
+                evento
+            )
+
+        time.sleep(
+            SLEEP_TIME
+        )
 
     return eventi_totali
 
 
 # ================= GOOGLE SHEETS =================
+
 def apri_worksheet():
+    # Sono richiesti soltanto i due secret
+    # già utilizzati dal vecchio script.
     variabili_obbligatorie = [
-        "GSHEET_PRIVATE_KEY_ID",
         "GSHEET_PRIVATE_KEY",
-        "GSHEET_CLIENT_EMAIL",
-        "GSHEET_CLIENT_ID"
+        "GSHEET_CLIENT_EMAIL"
     ]
 
     mancanti = [
@@ -413,6 +538,13 @@ def apri_worksheet():
             + ", ".join(mancanti)
         )
 
+    private_key = os.getenv(
+        "GSHEET_PRIVATE_KEY"
+    ).replace(
+        "\\n",
+        "\n"
+    )
+
     client_email = os.getenv(
         "GSHEET_CLIENT_EMAIL"
     )
@@ -423,15 +555,14 @@ def apri_worksheet():
         "private_key_id": os.getenv(
             "GSHEET_PRIVATE_KEY_ID"
         ),
-        "private_key": os.getenv(
-            "GSHEET_PRIVATE_KEY"
-        ).replace("\\n", "\n"),
+        "private_key": private_key,
         "client_email": client_email,
         "client_id": os.getenv(
             "GSHEET_CLIENT_ID"
         ),
         "auth_uri": (
-            "https://accounts.google.com/o/oauth2/auth"
+            "https://accounts.google.com/"
+            "o/oauth2/auth"
         ),
         "token_uri": (
             "https://oauth2.googleapis.com/token"
@@ -460,26 +591,29 @@ def apri_worksheet():
         )
     )
 
-    client = gspread.authorize(credentials)
+    client = gspread.authorize(
+        credentials
+    )
 
-    return client.open(
+    spreadsheet = client.open(
         SHEET_NAME
-    ).worksheet(
+    )
+
+    return spreadsheet.worksheet(
         WORKSHEET_NAME
     )
 
 
 # ================= MAIN =================
+
 def main():
-    # Prima esegue lo scraping.
-    # Il foglio viene modificato soltanto se
-    # sono stati realmente trovati eventi.
+    # Lo scraping viene eseguito prima di modificare il foglio.
     eventi_totali = scarica_eventi()
 
     if not eventi_totali:
         logging.error(
-            "Nessun evento trovato: "
-            "il foglio Google non è stato modificato"
+            "Nessun evento trovato. "
+            "Il foglio Google non è stato modificato."
         )
         return
 
@@ -509,9 +643,11 @@ def main():
         "Accesso a Google Sheets riuscito"
     )
 
-    # Mantiene la prima riga con le intestazioni.
-    # Non elimina fisicamente le righe del foglio.
-    sheet.batch_clear(["A2:F"])
+    # Cancella soltanto i contenuti dalla seconda riga in poi,
+    # conservando le intestazioni della prima riga.
+    sheet.batch_clear([
+        "A2:F"
+    ])
 
     sheet.append_rows(
         righe,
@@ -525,5 +661,6 @@ def main():
 
 
 # ================= START =================
+
 if __name__ == "__main__":
     main()
