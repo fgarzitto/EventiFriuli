@@ -16,11 +16,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 URL_BASE = "https://www.itinerarinellarte.it"
 URL_EVENTI = f"{URL_BASE}/it/mostre/friuli-venezia-giulia"
 
-# Con 7 vengono considerati oggi e i successivi 7 giorni.
+# Considera oggi e i successivi 7 giorni:
+# in totale 8 giorni di calendario.
 GIORNI_AVANTI = 7
 
-# Numero massimo di pagine successive da controllare.
-# Con 4 vengono controllate la prima pagina più altre quattro.
+# Controlla la prima pagina più altre quattro pagine.
 MAX_PAGES = 4
 
 RISULTATI_PER_PAGINA = 10
@@ -58,7 +58,7 @@ EVENT_PATH_RE = re.compile(
 )
 
 
-# ================= UTILS =================
+# ================= FUNZIONI DI UTILITÀ =================
 
 def parse_data(text):
     try:
@@ -134,8 +134,8 @@ def trova_contenitore_evento(link_elem):
             )
         ]
 
-        # Una scheda può avere più link allo stesso evento,
-        # per esempio uno sull'immagine e uno sul titolo.
+        # Una scheda può contenere più link allo stesso evento,
+        # per esempio un link sull'immagine e uno sul titolo.
         if len(link_evento_nel_blocco) <= 3:
             return parent
 
@@ -207,7 +207,8 @@ def estrai_luogo(container):
 def estrai_eventi(soup):
     eventi = []
 
-    # Si confrontano solo le date, senza ore e minuti.
+    # Si confrontano solo le date,
+    # senza considerare ore e minuti.
     oggi = datetime.now().date()
 
     limite = oggi + timedelta(
@@ -316,7 +317,8 @@ def estrai_eventi(soup):
         if data_fine < oggi:
             continue
 
-        # Esclude gli eventi che iniziano oltre il periodo richiesto.
+        # Esclude gli eventi che iniziano
+        # oltre la finestra temporale richiesta.
         if data_inizio > limite:
             continue
 
@@ -338,7 +340,8 @@ def estrai_eventi(soup):
             ultimo_giorno - primo_giorno
         ).days
 
-        # Crea una riga per ogni giorno in cui la mostra è attiva.
+        # Crea una riga per ogni giorno
+        # durante il quale la mostra è attiva.
         for i in range(numero_giorni + 1):
             giorno = primo_giorno + timedelta(
                 days=i
@@ -468,7 +471,7 @@ def scarica_eventi():
         )
 
         # Se non viene riconosciuta nessuna scheda,
-        # salva l'HTML ricevuto per consentire il controllo.
+        # salva la pagina HTML ricevuta per poterla controllare.
         if schede_lette == 0:
             debug_file = (
                 "debug_itinerarinellarte_"
@@ -519,8 +522,8 @@ def scarica_eventi():
 # ================= GOOGLE SHEETS =================
 
 def apri_worksheet():
-    # Sono richiesti soltanto i due secret
-    # già utilizzati dal vecchio script.
+    # Vengono richiesti soltanto i due secret
+    # già presenti e utilizzati dal vecchio script.
     variabili_obbligatorie = [
         "GSHEET_PRIVATE_KEY",
         "GSHEET_CLIENT_EMAIL"
@@ -604,6 +607,56 @@ def apri_worksheet():
     )
 
 
+# ================= SCRITTURA SUL FOGLIO =================
+
+def scrivi_eventi_sul_foglio(sheet, righe):
+    # Serve una riga per le intestazioni
+    # più una riga per ciascun evento.
+    righe_necessarie = len(righe) + 1
+    colonne_necessarie = 6
+
+    nuove_righe = max(
+        sheet.row_count,
+        righe_necessarie
+    )
+
+    nuove_colonne = max(
+        sheet.col_count,
+        colonne_necessarie
+    )
+
+    # Espande il foglio se il numero attuale
+    # di righe o colonne non è sufficiente.
+    if (
+        sheet.row_count < righe_necessarie
+        or sheet.col_count < colonne_necessarie
+    ):
+        logging.info(
+            "Ridimensionamento foglio: "
+            "%s righe e %s colonne",
+            nuove_righe,
+            nuove_colonne
+        )
+
+        sheet.resize(
+            rows=nuove_righe,
+            cols=nuove_colonne
+        )
+
+    # Ora l'intervallo A2:F esiste sicuramente.
+    # Cancella i dati precedenti conservando le intestazioni.
+    sheet.batch_clear([
+        f"A2:F{sheet.row_count}"
+    ])
+
+    # Scrive tutti i nuovi dati a partire dalla seconda riga.
+    sheet.update(
+        range_name=f"A2:F{len(righe) + 1}",
+        values=righe,
+        value_input_option="USER_ENTERED"
+    )
+
+
 # ================= MAIN =================
 
 def main():
@@ -643,15 +696,9 @@ def main():
         "Accesso a Google Sheets riuscito"
     )
 
-    # Cancella soltanto i contenuti dalla seconda riga in poi,
-    # conservando le intestazioni della prima riga.
-    sheet.batch_clear([
-        "A2:F"
-    ])
-
-    sheet.append_rows(
-        righe,
-        value_input_option="USER_ENTERED"
+    scrivi_eventi_sul_foglio(
+        sheet,
+        righe
     )
 
     logging.info(
@@ -660,7 +707,7 @@ def main():
     )
 
 
-# ================= START =================
+# ================= AVVIO =================
 
 if __name__ == "__main__":
     main()
